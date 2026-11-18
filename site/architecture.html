@@ -1,0 +1,169 @@
+<title>연쇄 지연 워치 아키텍처</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&family=Space+Grotesk:wght@500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: 왼쪽에서 오른쪽으로 흐르는 5단계 열, 위는 배치 줄 아래는 스트리밍 줄, S3에서 합류 */
+:root {
+  --bg: #f4f6fb; --card: #ffffff; --ink: #141a2b; --muted: #5d6680; --line: #d9deea;
+  --blue: #2f5bff; --blue-soft: #e8edff; --stream: #c4511b; --stream-soft: #fdeee6;
+  --ok: #1f8a5b; --ok-soft: #e3f4ec;
+  --display: "Space Grotesk", "Noto Sans KR", system-ui, sans-serif;
+  --body: "Noto Sans KR", system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0d1120; --card: #161c2f; --ink: #e8ecf6; --muted: #98a2bd; --line: #2a3350;
+  --blue: #7d98ff; --blue-soft: #1c2650; --stream: #ff9a6a; --stream-soft: #3a2218; --ok: #5fd39c; --ok-soft: #15322a; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0d1120; --card: #161c2f; --ink: #e8ecf6; --muted: #98a2bd; --line: #2a3350;
+  --blue: #7d98ff; --blue-soft: #1c2650; --stream: #ff9a6a; --stream-soft: #3a2218; --ok: #5fd39c; --ok-soft: #15322a; color-scheme: dark; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.wrap { max-width: 1180px; margin: 0 auto; padding-block: 32px 56px; display: flex; flex-direction: column; gap: 28px; }
+header { display: flex; flex-direction: column; gap: 6px; }
+.eye { font-family: var(--mono); font-size: 11.5px; letter-spacing: .14em; color: var(--blue); }
+h1 { font-family: var(--display); font-size: clamp(1.6rem, 3.6vw, 2.3rem); line-height: 1.2; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--display); font-size: 1.15rem; margin: 0 0 10px; text-wrap: balance; }
+.lead { color: var(--muted); max-width: 70ch; margin: 0; }
+
+/* 흐름 그림 */
+.flow-scroll { overflow-x: auto; }
+.flow { display: grid; grid-template-columns: 9.5rem repeat(5, minmax(150px, 1fr)); grid-template-rows: auto auto auto; gap: 14px 26px; min-width: 980px; padding: 4px 2px 8px; }
+.stage { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; color: var(--muted); padding-bottom: 2px; border-bottom: 1px solid var(--line); }
+.lane { display: flex; flex-direction: column; justify-content: center; gap: 2px; font-size: 13px; }
+.lane b { font-family: var(--display); font-size: 1rem; }
+.lane span { color: var(--muted); font-size: 12px; }
+.lane.batch b { color: var(--blue); } .lane.stream b { color: var(--stream); }
+.node { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 13px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.node h3 { margin: 0; font-family: var(--display); font-size: .98rem; line-height: 1.25; }
+.node p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+.node .tag { align-self: flex-start; font-family: var(--mono); font-size: 10.5px; padding: 1px 7px; border-radius: 999px; background: var(--blue-soft); color: var(--blue); }
+.node.s .tag { background: var(--stream-soft); color: var(--stream); }
+.node.s { border-color: color-mix(in srgb, var(--stream) 45%, var(--line)); }
+.node.hub { border: 2px solid var(--blue); }
+.node:not(.last)::after { content: "→"; position: absolute; right: -21px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 16px; }
+.node.s:not(.last)::after { color: var(--stream); }
+.node.down::before { content: "↘"; position: absolute; right: -21px; bottom: -4px; color: var(--stream); font-size: 16px; }
+.span2 { grid-row: 2 / span 2; justify-content: center; }
+.files { display: flex; flex-wrap: wrap; gap: 4px; }
+.files code { font-family: var(--mono); font-size: 10.5px; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--muted); }
+.legend i { display: inline-block; width: 18px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px 22px; min-width: 0; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; padding: 8px 10px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; color: var(--muted); font-weight: 500; }
+td.num { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tbl { overflow-x: auto; }
+.pill { display: inline-block; font-family: var(--mono); font-size: 10.5px; padding: 1px 7px; border-radius: 999px; }
+.pill.b { background: var(--blue-soft); color: var(--blue); } .pill.s { background: var(--stream-soft); color: var(--stream); } .pill.o { background: var(--ok-soft); color: var(--ok); }
+ul.plain { margin: 0; padding-left: 1.1em; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+ul.plain li b { font-weight: 700; }
+.note { font-size: 12.5px; color: var(--muted); margin: 10px 0 0; }
+.now { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; font-size: 13.5px; }
+.now .arrow { color: var(--muted); }
+.now .box { border: 1px dashed var(--line); border-radius: 8px; padding: 4px 10px; background: var(--bg); }
+.qs { margin: 0; padding-left: 1.3em; display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
+.qs span { color: var(--muted); display: block; font-size: 13px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="eye">CHAIN DELAY WATCH · ICN · AWS PIPELINE</span>
+    <h1>지연은 어디서 시작되고, 어떤 조건에서 다음 편으로 넘어가나</h1>
+    <p class="lead">인천공항 운항 기록을 같은 기체(등록부호)로 이어 붙여 지연의 시작점과 전이 조건을 분석하는 파이프라인입니다. 자료마다 바뀌는 속도가 달라서 수집 주기를 다르게 두고, 초 단위로 쏟아지는 기체 위치만 스트리밍으로 받습니다.</p>
+  </header>
+
+  <section class="card">
+    <h2>전체 흐름</h2>
+    <div class="legend" aria-hidden="true"><span><i style="background:var(--blue)"></i>배치 수집 (분·시간 단위)</span><span><i style="background:var(--stream)"></i>스트리밍 수집 (초 단위)</span></div>
+    <div class="flow-scroll">
+      <div class="flow" role="img" aria-label="수집, 저장, 정리, 분석과 예측, 보여주기 다섯 단계 아키텍처 흐름">
+        <span style="grid-area:1/1"></span>
+        <span class="stage">1 · 수집</span><span class="stage">2 · 원본 저장</span><span class="stage">3 · 정리·가공</span><span class="stage">4 · 분석·예측</span><span class="stage">5 · 보여주기</span>
+
+        <div class="lane batch" style="grid-area:2/1"><b>배치</b><span>운항 15분 · 날씨 1시간</span></div>
+        <div class="node" style="grid-area:2/2"><span class="tag">EventBridge Scheduler</span><h3>Lambda 수집기</h3><p>인천공항 운항, 한국공항공사 출발편, 공항 METAR·TAF, Open-Meteo 시간별 예보를 정해진 주기로 호출합니다.</p></div>
+        <div class="node hub span2" style="grid-column:3"><span class="tag">S3 · raw/</span><h3>원본 그대로 쌓기</h3><p>받은 JSON을 바꾸지 않고 날짜별로 보관합니다. 다시 계산할 일이 생겨도 원본에서 시작할 수 있습니다.</p>
+          <div class="files"><code>flights/</code><code>kac/</code><code>weather/</code><code>forecast/</code><code>positions/</code><code>events/</code><code>reference/</code></div></div>
+        <div class="node span2" style="grid-column:4"><span class="tag">Glue Crawler · Glue ETL</span><h3>기체 단위로 잇기</h3><p>코드쉐어 중복을 빼고 같은 등록부호의 도착·출발을 이어 붙입니다. 지상 여유 시간, 넘겨받은 지연, 새로 생긴 지연을 계산합니다. 최소 턴 시간은 45분(광동체 75분)을 기준으로 합니다.</p>
+          <div class="files"><code>curated/ Parquet</code><code>날짜 파티션</code></div></div>
+        <div class="node" style="grid-area:2/5"><span class="tag">Athena</span><h3>질문별 집계 SQL</h3><p>시작 고리 비율, 여유 시간별 전이율, 항공사·시간대별 누적을 계산합니다.</p></div>
+        <div class="node last span2" style="grid-column:6"><span class="tag">QuickSight 또는 웹 대시보드</span><h3>운영 담당자 화면</h3><p>지금 늦게 들어오는 기체 가운데 여유가 짧아 다음 편까지 늦을 편을 먼저 보여 줍니다. 누적 분석과 예측 오차도 함께 봅니다.</p></div>
+
+        <div class="lane stream" style="grid-area:3/1"><b>스트리밍</b><span>기체 위치 30초~1분 · 운항 변화 10분</span></div>
+        <div class="node s" style="grid-area:3/2"><span class="tag">Lambda · ADS-B</span><h3>기체 위치 · 운항 변화 수신</h3><p>인천 주변 공역의 항공기 위치(하루 수백만 건)와, 10분마다 운항표를 받아 직전과 달라진 편만 낸 변화 이벤트를 보냅니다. 지연·결항 경고를 곧바로 띄울 수 있습니다.</p></div>
+        <div class="node" style="grid-area:3/5"><span class="tag">SageMaker · XGBoost</span><h3>다음 편 지연 예측</h3><p>주 1회 재학습합니다. 입력은 앞 편 도착 지연, 여유 시간, 시간대, 날씨, 노선 거리, 항공사입니다. 결과는 <code>predictions/</code>에 저장합니다.</p></div>
+      </div>
+    </div>
+    <p class="note">스트리밍 줄의 Lambda는 Kinesis Data Firehose로 보내고, Firehose가 1~5분 또는 일정 용량 단위로 묶어 S3 <code>raw/positions/</code>, <code>raw/events/</code>에 씁니다. 그림에서는 화살표로 줄였습니다. 범위는 인천공항을 거치는 전체 항공사이고, 국내 다른 공항은 비교용입니다.</p>
+  </section>
+
+  <div class="grid2">
+    <section class="card">
+      <h2>자료별 수집 주기와 이유</h2>
+      <div class="tbl"><table>
+        <thead><tr><th>자료</th><th>주기</th><th>이유</th></tr></thead>
+        <tbody>
+          <tr><td>인천공항 운항<br><span class="pill b">배치</span></td><td class="num">15분</td><td>개발 계정 하루 500회 한도, 한 번에 4회 호출이라 하루 384회. 지연 시각 변경은 분 단위면 충분합니다.</td></tr>
+          <tr><td>한국공항공사 출발편<br><span class="pill b">배치</span></td><td class="num">15분</td><td>김포·제주 등 국내선 비교용. 등록부호가 없어 공항별 집계에만 씁니다.</td></tr>
+          <tr><td>공항 METAR·TAF<br><span class="pill b">배치</span></td><td class="num">1시간</td><td>관측 자체가 30~60분 간격이라 더 자주 받아도 같은 값입니다.</td></tr>
+          <tr><td>공항 시간별 예보 (Open-Meteo)<br><span class="pill b">배치</span></td><td class="num">1시간</td><td>예보를 쌓아 두었다가 다음 날 실제 지연과 맞춰 봅니다. "조기 식별"의 입력입니다.</td></tr>
+          <tr><td>운항 변화 이벤트<br><span class="pill s">스트리밍</span></td><td class="num">10분</td><td>직전 값과 달라진 편(변경 시각·결항·게이트)만 보내 지연 경고를 곧바로 반영합니다.</td></tr>
+          <tr><td>기체 위치 ADS-B<br><span class="pill s">스트리밍</span></td><td class="num">30초~1분</td><td>값이 초 단위로 바뀌고 양이 많아 Firehose로 버퍼링해서 씁니다.</td></tr>
+          <tr><td>한국공항공사 지연 집계 (2017~2025.5), 공식 항공사 지연율, 노선 거리<br><span class="pill o">1회</span></td><td class="num">한 번</td><td>연도별 추이와 코로나 전후 비교처럼 "지연은 얼마나 많은가"에 답하는 참고 표입니다. 편별 과거 기록은 공개된 곳이 없어 직접 쌓습니다.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section class="card">
+      <h2>대시보드가 답할 질문</h2>
+      <ol class="qs">
+        <li><b>그날 지연을 가장 많이 퍼뜨린 노선·편·시간대는 무엇이고, 얼마나 오래 퍼졌나</b><span>대표 질문. 같은 기체의 연속 운항을 이어 연쇄 길이를 쟽니다 (Glue + Athena)</span></li>
+        <li><b>지연은 얼마나 많은가</b><span>연도별 추이와 코로나 전후 비교, 국내선과 국제선 비교 (참고 표 + Athena)</span></li>
+        <li><b>지연은 어디서 시작되나</b><span>늦게 뜬 편을 인천 지상에서 새로 생긴 지연과 앞 편에게서 넘겨받은 지연으로 나눔 (Glue에서 기체 잇기)</span></li>
+        <li><b>어떤 조건에서 다음 편으로 넘어가나</b><span>지상 여유 시간별 전이율, 날씨 나쁜 날과 좋은 날 비교 (Athena)</span></li>
+        <li><b>누구에게, 언제 쌓이나</b><span>항공사·시간대별로 저녁으로 갈수록 커지는지 (Athena)</span></li>
+        <li><b>오늘 남은 편은 얼마나 늦을까</b><span>같은 기체 다음 편의 출발 지연 예측 (SageMaker)</span></li>
+      </ol>
+    </section>
+  </div>
+
+  <div class="grid2">
+    <section class="card">
+      <h2>왜 이렇게 나눴나</h2>
+      <ul class="plain">
+        <li><b>운항 자료는 하루 약 2,400건</b>이라 스트리밍이 필요 없습니다. 정해진 주기로 받는 배치가 싸고 단순합니다.</li>
+        <li><b>기체 위치만 초 단위로 쏟아져서</b> 이 줄에만 버퍼링(Firehose)을 둡니다. "왜 파이프라인인가"에 대한 답입니다.</li>
+        <li><b>Kinesis Data Streams 대신 Firehose</b>를 쓰면 켜 둔 시간이 아니라 들어온 양만큼 과금됩니다.</li>
+        <li><b>Redshift 대신 Athena</b>: 하루 약 1MB 규모라 켜 둔 시간만큼 과금되는 데이터 웨어하우스보다 조회한 만큼만 내는 Athena가 맞습니다.</li>
+        <li><b>원본(raw)과 가공(curated)을 나눠</b> 계산 방식을 바꿔도 원본에서 다시 만들 수 있게 합니다.</li>
+        <li><b>인천공항 API는 3일 전까지만 조회</b>되므로, 수집을 먼저 시작해 둔 자료가 과거 데이터가 됩니다.</li>
+      </ul>
+    </section>
+    <section class="card">
+      <h2>비용과 보안</h2>
+      <ul class="plain">
+        <li><b>비용이 거의 없는 쪽</b>: Lambda, EventBridge, S3, Athena, Glue 크롤러 (하루 수 MB 규모).</li>
+        <li><b>비용이 생기는 쪽</b>: Firehose(들어온 양), SageMaker 학습(학습 시간), QuickSight(사용자 수). 웹 대시보드로 대신하면 QuickSight 비용은 없습니다.</li>
+        <li><b>보안 기본값</b>: S3 SSE-KMS 암호화, HTTPS만 허용하는 버킷 정책, Lambda·Glue·SageMaker 역할별 최소 권한.</li>
+        <li><b>API 키</b>: 공공데이터포털 키는 Secrets Manager 또는 Lambda 환경 변수에 두고 코드와 로그에 남기지 않습니다.</li>
+      </ul>
+      <p class="note">월 비용은 아직 요금 계산기로 확인하지 않은 추정입니다. 수집 주기를 확정한 뒤 AWS 요금 계산기로 뽑아 발표 자료에 넣을 예정입니다.</p>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>지금 상태</h2>
+    <div class="now">
+      <span class="box">GitHub Actions (하루 2회)</span><span class="arrow">→</span>
+      <span class="box">Vercel 중계 API</span><span class="arrow">→</span>
+      <span class="box">GitHub data 브랜치 (JSON)</span><span class="arrow">→</span>
+      <span class="box">웹 대시보드</span>
+    </div>
+    <p class="note">AWS 리소스는 아직 만들지 않았고 과금도 없습니다. 11/13부터 모은 자료(4일, 약 1만 3천 건)는 S3를 만들 때 <code>raw/</code>에 그대로 올려 과거 자료로 씁니다. 그 뒤로는 위 그림의 Lambda 수집기가 GitHub Actions를 대신합니다.</p>
+  </section>
+</div>

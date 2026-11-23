@@ -2,6 +2,7 @@
 // 인증키는 Netlify 환경 변수 DATA_GO_KR_KEY 에서만 읽고 응답에 싣지 않는다.
 const STATUS = 'https://apis.data.go.kr/B551178/flight-status';
 const ROUTES = 'https://apis.data.go.kr/B551178/flight-routes';
+const AIRCRAFT = 'https://apis.data.go.kr/B551178/flight-aircraft-status';
 const json = (body, status = 200, extra = {}) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8', ...extra } });
 const today = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10).replace(/-/g, '');
@@ -90,6 +91,15 @@ export default async (req) => {
         200, { 'cache-control': 'public, max-age=3600', 'netlify-cdn-cache-control': 'public, s-maxage=86400' });
     }
     const day = /^\d{8}$/.test(q.get('date') || '') ? q.get('date') : today();
+    // 2026-11-23 추가: "전국공항 실시간 항공기 기종 및 등록번호 정보" — 국내선 편별 등록번호(기체)로 같은 기체의 앞·뒤 편을 잇는다.
+    // 요청 항목: schStTime/schEdTime(YYYYMMDDHHmm), schAirCode, schFln, Line(D/I), schAPLno, schAPM. 응답은 원본 그대로 싣는다.
+    if (q.get('what') === 'aircraft') {
+      const extra = ['schAirCode', 'schFln', 'Line', 'schAPLno', 'schAPM'].map((k) => (q.get(k) ? `&${k}=${encodeURIComponent(q.get(k))}` : '')).join('');
+      const range = q.get('norange') === '1' ? '' : `&schStTime=${day}0000&schEdTime=${day}2359`;
+      const { items, total } = await allPages((p, n) => `${AIRCRAFT}/info?serviceKey=${key}&pageNo=${p}&numOfRows=${n}${range}${extra}&type=json`);
+      if (q.get('debug') === '1') return json({ day, total, sample: items.slice(0, 3) }, 200, { 'cache-control': 'no-store' });
+      return json({ source: '한국공항공사 전국공항 실시간 항공기 기종 및 등록번호 정보', day, at: Math.floor(Date.now() / 1000), total, items }, 200, cache);
+    }
     const arr = q.get('dir') === 'arr';
     const first = await allPages((p, n) => `${STATUS}/${arr ? 'arrival' : 'depart'}?serviceKey=${key}&pageNo=${p}&numOfRows=${n}&searchday=${day}&type=json`);
     const items = first.items;

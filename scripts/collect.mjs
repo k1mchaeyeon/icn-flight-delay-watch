@@ -6,6 +6,8 @@ import path from 'node:path';
 const BASE = process.env.COLLECT_BASE || 'https://chain-delay-watch.vercel.app';
 const out = process.argv[2] || 'data';
 const back = Math.max(1, Math.min(3, Number(process.argv[3]) || 1));
+// 기종·등록번호 API 는 약 15일 전까지 조회된다(2026-11-23 확인: 11/08 있음, 11/06 없음). 빠진 날을 채울 수 있게 따로 받는다.
+const backAc = Math.max(back, Math.min(15, Number(process.argv[4]) || 1));
 const dayStr = (offset) => new Date(Date.now() + 9 * 3600 * 1000 - offset * 86400000).toISOString().slice(0, 10);
 const exists = (p) => access(p).then(() => true, () => false);
 
@@ -43,6 +45,14 @@ for (let d = back; d >= 1; d--) {
     const j = await get(`${BASE}/api/kac?flights=1&dir=arr&date=${ymd}`);
     if (j && j.flights?.length) await save('kac_arrivals', `${day}.json`, j); else { failed++; console.error(`한국공항공사 도착 ${day} 받지 못함`); }
   }
+}
+// 국내선 편별 등록번호(기체): 같은 기체의 앞·뒤 편을 잇는 데 쓴다 (2026-11-23 추가)
+for (let d = backAc; d >= 1; d--) {
+  const day = dayStr(d), ymd = day.replace(/-/g, '');
+  if (await exists(path.join(out, 'kac_aircraft', `${day}.json`))) continue;
+  const j = await get(`${BASE}/api/kac?what=aircraft&date=${ymd}`);
+  if (j && j.items?.length && j.items.length >= j.total) await save('kac_aircraft', `${day}.json`, j);
+  else { failed++; console.error(`한국공항공사 등록번호 ${day} 받지 못함 (${j?.items?.length ?? 0}/${j?.total ?? '?'})`); }
 }
 // 날씨는 최근 30시간 관측만 받을 수 있다. 예약 실행이 몇 시간씩 늦어져도 빈 시간이 없도록
 // 하루 두 번 받아 실행 시각 이름으로 따로 저장한다 (겹치는 관측은 학습 전에 시각으로 중복 제거).

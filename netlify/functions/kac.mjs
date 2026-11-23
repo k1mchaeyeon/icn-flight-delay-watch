@@ -60,7 +60,7 @@ async function allPages(make) {
     try {
       const first = await call(make(1, rows));
       let items = first.items;
-      const pages = Math.min(Math.ceil(first.total / rows), 12);
+      const pages = Math.min(Math.ceil(first.total / rows), 30);
       if (pages > 1) { const rest = await Promise.all(Array.from({ length: pages - 1 }, (_, i) => call(make(i + 2, rows)))); for (const r of rest) items = items.concat(r.items); }
       return { items, total: first.total };
     } catch (e) { lastErr = e; }

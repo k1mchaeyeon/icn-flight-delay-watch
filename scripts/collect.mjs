@@ -38,6 +38,11 @@ for (let d = back; d >= 1; d--) {
     const j = await get(`${BASE}/api/kac?flights=1&date=${ymd}`);
     if (j && j.flights?.length) await save('kac_departures', `${day}.json`, j); else { failed++; console.error(`한국공항공사 운항 ${day} 받지 못함`); }
   }
+  // 도착 시각: 제주처럼 ADS-B로 착륙을 못 잡는 공항의 앞 편 도착 시각을 채운다 (2026-11-23 추가)
+  if (!(await exists(path.join(out, 'kac_arrivals', `${day}.json`)))) {
+    const j = await get(`${BASE}/api/kac?flights=1&dir=arr&date=${ymd}`);
+    if (j && j.flights?.length) await save('kac_arrivals', `${day}.json`, j); else { failed++; console.error(`한국공항공사 도착 ${day} 받지 못함`); }
+  }
 }
 // 날씨는 최근 30시간 관측만 받을 수 있다. 예약 실행이 몇 시간씩 늦어져도 빈 시간이 없도록
 // 하루 두 번 받아 실행 시각 이름으로 따로 저장한다 (겹치는 관측은 학습 전에 시각으로 중복 제거).

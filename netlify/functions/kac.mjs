@@ -1,4 +1,4 @@
-// 한국공항공사 "실시간 항공기 운항정보 조회" (인천 제외 14개 공항 출발편)와 "노선별 소요시간 및 거리" 중계.
+// 한국공항공사 "실시간 항공기 운항정보 조회" (14개 공항 출발편, dir=arr 이면 도착편)와 "노선별 소요시간 및 거리" 중계.
 // 인증키는 Netlify 환경 변수 DATA_GO_KR_KEY 에서만 읽고 응답에 싣지 않는다.
 const STATUS = 'https://apis.data.go.kr/B551178/flight-status';
 const ROUTES = 'https://apis.data.go.kr/B551178/flight-routes';
@@ -90,7 +90,8 @@ export default async (req) => {
         200, { 'cache-control': 'public, max-age=3600', 'netlify-cdn-cache-control': 'public, s-maxage=86400' });
     }
     const day = /^\d{8}$/.test(q.get('date') || '') ? q.get('date') : today();
-    const first = await allPages((p, n) => `${STATUS}/depart?serviceKey=${key}&pageNo=${p}&numOfRows=${n}&searchday=${day}&type=json`);
+    const arr = q.get('dir') === 'arr';
+    const first = await allPages((p, n) => `${STATUS}/${arr ? 'arrival' : 'depart'}?serviceKey=${key}&pageNo=${p}&numOfRows=${n}&searchday=${day}&type=json`);
     const items = first.items;
     if (q.get('debug') === '1') return json({ day, total: first.total, sample: items[0] ?? null, sample2: items[Math.floor(items.length / 2)] ?? null }, 200, { 'cache-control': 'no-store' });
     const nowMin = day === today() ? Math.round(((Date.now() + 9 * 3600 * 1000) % 86400000) / 60000) : 99999;
@@ -99,20 +100,22 @@ export default async (req) => {
       if (/^y/i.test(pick(o, 'codeshare') || '') && pick(o, 'masterflightid') && pick(o, 'masterflightid') !== pick(o, 'flightid')) continue;
       const sm = toMin(pick(o, 'scheduledatetime'), day), em = toMin(pick(o, 'estimateddatetime'), day);
       const status = pick(o, 'rmkKor');
+      // 도착편은 sched/est 가 도착 예정·변경 시각, gone 은 도착 완료
       flights.push({ flight: pick(o, 'flightid'), airline: pick(o, 'airline'), from: pick(o, 'depAirportCode'), from_name: pick(o, 'depAirport'), to: pick(o, 'arrvAirportCode', 'arrAirportCode'), to_name: pick(o, 'arrAirport'),
-        line: pick(o, 'line'), sched_min: sm, est_min: em, delay_min: sm != null && em != null ? em - sm : null, status, cancelled: /결항/.test(status || ''), gone: /출발/.test(status || '') || (em != null && em <= nowMin) });
+        line: pick(o, 'line'), sched_min: sm, est_min: em, delay_min: sm != null && em != null ? em - sm : null, status, cancelled: /결항/.test(status || ''), gone: (arr ? /도착/ : /출발/).test(status || '') || (em != null && em <= nowMin) });
     }
     const by = new Map();
     for (const f of flights) {
-      if (!f.from) continue;
-      const a = by.get(f.from) || { code: f.from, name: f.from_name, total: 0, departed: 0, late15: 0, cancelled: 0, sum: 0, worst: null };
+      const ap = arr ? f.to : f.from;
+      if (!ap) continue;
+      const a = by.get(ap) || { code: ap, name: arr ? f.to_name : f.from_name, total: 0, departed: 0, late15: 0, cancelled: 0, sum: 0, worst: null };
       a.total++;
       if (f.cancelled) a.cancelled++;
-      else if (f.gone && f.delay_min != null) { a.departed++; a.sum += Math.max(0, f.delay_min); if (f.delay_min >= 15) a.late15++; if (!a.worst || f.delay_min > a.worst.delay_min) a.worst = { flight: f.flight, to: f.to, delay_min: f.delay_min }; }
-      by.set(f.from, a);
+      else if (f.gone && f.delay_min != null) { a.departed++; a.sum += Math.max(0, f.delay_min); if (f.delay_min >= 15) a.late15++; if (!a.worst || f.delay_min > a.worst.delay_min) a.worst = { flight: f.flight, to: arr ? f.from : f.to, delay_min: f.delay_min }; }
+      by.set(ap, a);
     }
     const airports = [...by.values()].map((a) => ({ ...a, avg: a.departed ? Math.round(a.sum / a.departed) : 0, sum: undefined })).sort((a, b) => b.total - a.total);
-    return json({ source: '한국공항공사 실시간 항공기 운항정보 조회', day, at: Math.floor(Date.now() / 1000), total: first.total, airports, flights: q.get('flights') === '1' ? flights : undefined }, 200, cache);
+    return json({ source: '한국공항공사 실시간 항공기 운항정보 조회', dir: arr ? 'arr' : 'dep', day, at: Math.floor(Date.now() / 1000), total: first.total, airports, flights: q.get('flights') === '1' ? flights : undefined }, 200, cache);
   } catch (e) {
     return json({ error: String(e.message || e) }, 502, { 'cache-control': 'no-store' });
   }
